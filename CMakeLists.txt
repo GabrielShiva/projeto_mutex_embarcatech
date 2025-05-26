@@ -14,6 +14,7 @@ endif()
 # ====================================================================================
 
 cmake_minimum_required(VERSION 3.13)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -25,6 +26,8 @@ include(${FREERTOS_KERNEL_PATH}/portable/ThirdParty/GCC/RP2040/FreeRTOS_Kernel_i
 
 project(projeto_multitarefas_mutex C CXX ASM)
 pico_sdk_init()
+
+include_directories(${CMAKE_SOURCE_DIR}/lib)
 
 add_executable(${PROJECT_NAME}
     main.c

@@ -13,7 +13,7 @@
 #include <string.h>
 
 // Define o máximo de carros no estacionamento
-#define MAX 8
+#define PARKING_MAX 8
 
 #define BTN_B_PIN 6
 #define BTN_A_PIN 5
@@ -82,7 +82,7 @@ int main() {
     peripheral_initialization();
 
     // Cria os semáforos
-    xCounterSemaphore = xSemaphoreCreateCounting(MAX, 0);
+    xCounterSemaphore = xSemaphoreCreateCounting(PARKING_MAX, 0);
     xDisplayMutex = xSemaphoreCreateMutex();
     xResetBiSemaphore = xSemaphoreCreateBinary();
     xEntranceBiSemaphore = xSemaphoreCreateBinary();
@@ -138,6 +138,11 @@ void peripheral_initialization() {
     led_rgb_setup(LED_GREEN);
     led_rgb_setup(LED_BLUE);
 
+    // Ativa o LED azul para o contador == 0
+    gpio_put(LED_RED, 0);
+    gpio_put(LED_GREEN, 0);
+    gpio_put(LED_BLUE, 1);
+
     // Inicializa o buzzer
     gpio_init(BUZZER_PIN);
     gpio_set_dir(BUZZER_PIN, GPIO_OUT);
@@ -151,7 +156,7 @@ void peripheral_initialization() {
 
     // Realiza a limpeza do display
     ssd1306_fill(&ssd, false);
-    ssd1306_init();
+    ssd1306_send_data(&ssd);
 
     ssd1306_draw_string(&ssd, "Carros: 0 de 8", 10, 5);
     ssd1306_send_data(&ssd);
@@ -191,64 +196,54 @@ void ssd1306_setup(ssd1306_t *ssd_ptr) {
   ssd1306_send_data(ssd_ptr);
 }
 
+void update_display_led() {
+    xSemaphoreTake(xDisplayMutex, portMAX_DELAY);
+    int active = uxSemaphoreGetCount(xCounterSemaphore);
+
+    // Display OLED
+    char buffer[32];
+    sprintf(buffer, "Carros: %d de %d", active, PARKING_MAX);
+    ssd1306_fill(&ssd, false);
+    ssd1306_draw_string(&ssd, buffer, 10, 5);
+    ssd1306_send_data(&ssd);
+
+        // LED RGB
+    if (active == 0) {
+        gpio_put(LED_RED, 0);
+        gpio_put(LED_GREEN, 0);
+        gpio_put(LED_BLUE, 1);
+    } else if (active < PARKING_MAX - 1) {
+        gpio_put(LED_RED, 0);
+        gpio_put(LED_GREEN, 1);
+        gpio_put(LED_BLUE, 0);
+    } else if (active == PARKING_MAX - 1) {
+        gpio_put(LED_RED, 1);
+        gpio_put(LED_GREEN, 1);
+        gpio_put(LED_BLUE, 0);
+    } else {
+        gpio_put(LED_RED, 1);
+        gpio_put(LED_GREEN, 0);
+        gpio_put(LED_BLUE, 0);
+    }
+
+    xSemaphoreGive(xDisplayMutex);
+}
+
 // Implementa a tarefa de entrada de carro (botão A)
 void vEntranceTask() {
     while (true) {
         // Obtém o semáforo do contador de carros
         xSemaphoreTake(xEntranceBiSemaphore, portMAX_DELAY);
 
-        // Verifica se o semáforo do cotandor atingiu o limite (MAX). Caso não tenha atingido, executa o bloco abaixo
-        if (uxSemaphoreGetCount(xCounterSemaphore) < MAX) {
-            printf("Incrementou!\n");
+        // Verifica se o semáforo do cotandor atingiu o limite (PARKING_MAX). Caso não tenha atingido, executa o bloco abaixo
+        if (uxSemaphoreGetCount(xCounterSemaphore) < PARKING_MAX) {
+            printf("Carro entrou no estacionamento!\n");
 
             xSemaphoreGive(xCounterSemaphore);
-
-            xSemaphoreTake(xDisplayMutex, portMAX_DELAY);
-            int active = uxSemaphoreGetCount(xCounterSemaphore);
-
-            // Display OLED
-            char buffer[32];
-            sprintf(buffer, "Carros: %d de %d", active, MAX);
-            ssd1306_fill(&ssd, false);
-            ssd1306_draw_string(&ssd, buffer, 10, 5);
-            ssd1306_send_data(&ssd);
-
-             // LED RGB
-            gpio_put(LED_RED, 0);
-            gpio_put(LED_GREEN, 0);
-            gpio_put(LED_BLUE, 0);
-            if (active == 0) {
-                gpio_put(LED_RED, 0);
-                gpio_put(LED_GREEN, 0);
-                gpio_put(LED_BLUE, 1);
-            } else if (active < MAX_USERS - 1) {
-                gpio_put(LED_RED, 0);
-                gpio_put(LED_GREEN, 1);
-                gpio_put(LED_BLUE, 0);
-            } else if (active == MAX_USERS - 1) {
-                gpio_put(LED_RED, 1);
-                gpio_put(LED_GREEN, 1);
-                gpio_put(LED_BLUE, 0);
-            } else {
-                gpio_put(LED_RED, 1);
-                gpio_put(LED_GREEN, 0);
-                gpio_put(LED_BLUE, 0);
-            }
-
-            xSemaphoreGive(mtxDisplay);
+            update_display_led();
         } else {
-            printf("Máximo atingido!\n");
+            printf("Limite máximo de carros foi atingido!\n");
         }
-
-        // Assume o semáforo do display
-        // if (xSemaphoreTake(xDisplayMutex, portMAX_DELAY) == pdTRUE) {
-        //     ssd1306_fill(&ssd, 0);
-        //     ssd1306_draw_string(&ssd, "Carro entrou", 5, 20);
-        //     ssd1306_send_data(&ssd);
-
-        //     // Libera o semáforo do display
-        //     xSemaphoreGive(xDisplayMutex);
-        // }
     }
 }
 
@@ -256,20 +251,17 @@ void vEntranceTask() {
 void vLeaveTask() {
     while (true) {
         // Obtém o semáforo do contador de carros
-        if (xSemaphoreTake(xExitBiSemaphore, portMAX_DELAY) == pdTRUE) {
-            if (uxSemaphoreGetCount(xCounterSemaphore) < MAX) {
-                printf("Incrementou!\n");
-                xSemaphoreGive(xCounterSemaphore);
-            }
-        }
-        // Assume o semáforo do display
-        // if (xSemaphoreTake(xDisplayMutex, portMAX_DELAY) == pdTRUE) {
-        //     ssd1306_fill(&ssd, 0);
-        //     ssd1306_draw_string(&ssd, "Carro saiu", 5, 20);
-        //     ssd1306_send_data(&ssd);
+        // xSemaphoreTake(xExitBiSemaphore, portMAX_DELAY);
 
-        //     // Libera o semáforo do display
-        //     xSemaphoreGive(xDisplayMutex);
+        // Verifica se o semáforo do cotandor atingiu o limite (PARKING_MAX). Caso não tenha atingido, executa o bloco abaixo
+        // if (uxSemaphoreGetCount(xCounterSemaphore) > 0) {
+        //     printf("Carro saiu do estacionamento!\n");
+
+        //     xSemaphoreTake(xCounterSemaphore, 0);
+        //     update_display_led();
+        //     xSemaphoreGive(xCounterSemaphore);
+        // } else {
+        //     printf("Nenhum carro estacionado!\n");
         // }
     }
 }
@@ -286,7 +278,5 @@ void vResetTask() {
         //     // Libera o semáforo do display
         //     xSemaphoreGive(xDisplayMutex);
         // }
-
-        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
