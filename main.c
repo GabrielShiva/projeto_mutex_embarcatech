@@ -14,6 +14,7 @@
 
 // Define o máximo de carros no estacionamento
 #define PARKING_MAX 8
+volatile uint16_t parking_counter = 0;
 
 #define BTN_B_PIN 6
 #define BTN_A_PIN 5
@@ -37,8 +38,6 @@ SemaphoreHandle_t xResetBiSemaphore;
 SemaphoreHandle_t xEntranceBiSemaphore;
 SemaphoreHandle_t xExitBiSemaphore;
 
-volatile uint16_t parking_counter = 0;
-
 // Define variáveis para debounce dos botões
 volatile uint32_t last_time_btn_press = 0;
 const uint32_t debounce_delay_ms = 260;
@@ -46,11 +45,24 @@ const uint32_t debounce_delay_ms = 260;
 // Inicializa instância do display OLED
 ssd1306_t ssd;
 
+// pwm
+uint32_t clock   = 125000000;
+uint32_t divider = 0;
+uint32_t wrap    = 0;
+uint slice_num   = 0;
+uint channel_num = 0;
+
 // Inicializa os periféricos da placa
 void peripheral_initialization();
 
 // Realiza a inicialização dos botões
 void btn_setup(uint gpio);
+
+// Inicializa o buzzer
+void buzzer_setup();
+
+// Cálculo dos paramêtros do PWM para buzzer emitir frequência especificada
+void pwm_set_frequency(float frequency);
 
 // Realiza a inicialização dos LEDs RGB
 void led_rgb_setup(uint gpio);
@@ -61,10 +73,20 @@ void i2c_setup(uint baud_in_kilo);
 // Realiza a inicialização do display OLED
 void ssd1306_setup(ssd1306_t *ssd_ptr);
 
+// Atualiza o conteúdo do display (contador) e do LED RGB
+void update_counter_led();
+
 // Inicializa a função que realiza tratamento das interrupções dos botões
 void gpio_irq_handler(uint gpio, uint32_t events);
 
+// Exibe mensagem temporária no display
+void show_message(const char *message, uint8_t x, uint8_t y, uint32_t delay_ms);
+
+// Inicializa os periféricos da placa
 void peripheral_initialization();
+
+// função que faz com que o buzzer emita um som
+void buzzer_sound();
 
 // Implementa a tarefa de entrada de carro (botão A)
 void vEntranceTask();
@@ -122,6 +144,7 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
     }
 }
 
+// Inicializa os periféricos da placa
 void peripheral_initialization() {
     // Inicialização dos botões
     btn_setup(BTN_A_PIN);
@@ -144,9 +167,16 @@ void peripheral_initialization() {
     gpio_put(LED_BLUE, 1);
 
     // Inicializa o buzzer
-    gpio_init(BUZZER_PIN);
-    gpio_set_dir(BUZZER_PIN, GPIO_OUT);
-    gpio_put(BUZZER_PIN, 0);
+    gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
+    slice_num   = pwm_gpio_to_slice_num(BUZZER_PIN);
+    channel_num = pwm_gpio_to_channel(BUZZER_PIN);
+
+    // Configuração inicial do PWM
+    pwm_config config = pwm_get_default_config();
+    pwm_init(slice_num, &config, true);
+
+    // Desliga PWM do pino ligado ao buzzer
+    pwm_set_enabled(slice_num, false);
 
     // Inicialização do protocolo I2C com 400Khz
     i2c_setup(400);
@@ -161,13 +191,12 @@ void peripheral_initialization() {
     ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
     ssd1306_line(&ssd, 3, 15, 123, 15, true); // linha horizontal - primeira
     ssd1306_line(&ssd, 3, 40, 123, 40, true); // linha horizontal - segunda
-    ssd1306_line(&ssd, 53, 15, 53, 41, true); // linha vertical
+    ssd1306_line(&ssd, 53, 15, 53, 40, true); // linha vertical
     ssd1306_draw_string(&ssd, "Estacionamento", 9, 6);
     ssd1306_draw_string(&ssd, "Vagas", 9, 20);
     ssd1306_draw_string(&ssd, "Disp.", 9, 30);
 
     ssd1306_draw_string(&ssd, "8 de 8", 64, 25);
-
     ssd1306_send_data(&ssd);
 }
 
@@ -205,33 +234,87 @@ void ssd1306_setup(ssd1306_t *ssd_ptr) {
   ssd1306_send_data(ssd_ptr);
 }
 
-// Emite o som no buzzer
-void buzzer_sound(uint beep_type) {
-    if (beep_type == 0) {
-        gpio_put(BUZZER_PIN, 1);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        gpio_put(BUZZER_PIN, 0);
+// Cálculo dos paramêtros do PWM para buzzer emitir frequência especificada
+void pwm_set_frequency(float frequency) {
+    // Se frequência for menor que zero não executa nada
+    if (frequency <= 0.0f) {
+        pwm_set_enabled(slice_num, false);
+        return;
     }
 
+    // Calcula os valores para o divisor e para o wrap
+    divider = clock / (uint32_t)(frequency * 1000);
+    wrap = clock / (divider * (uint32_t)frequency) - 1;
+
+    // Aplica as configurações calculados
+    pwm_set_clkdiv_int_frac(slice_num, divider, 0);
+    pwm_set_wrap(slice_num, wrap);
+    pwm_set_chan_level(slice_num, channel_num, wrap / 2); // Define o Duty cycle de 50%
+}
+
+// Emite o som no buzzer
+void buzzer_sound(uint beep_type) {
+    // buzzer emite um beep único com freq. de 60hz
+    if (beep_type == 0) {
+        // Define a frequência do buzzer
+        pwm_set_frequency(60);
+
+        // Liga o buzzer por 100ms
+        pwm_set_enabled(slice_num, true);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        pwm_set_enabled(slice_num, false);
+    }
+
+    // buzzer emite um beep duplo com freq. de 60hz
     if (beep_type == 1) {
         for (int i = 0; i < 2; i++) {
-            gpio_put(BUZZER_PIN, 1);
+            // Define a frequência do buzzer
+            pwm_set_frequency(60);
+
+            // Liga o buzzer por 100ms
+            pwm_set_enabled(slice_num, true);
             vTaskDelay(pdMS_TO_TICKS(100));
-            gpio_put(BUZZER_PIN, 0);
+            pwm_set_enabled(slice_num, false);
             vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 }
 
-void update_display_led() {
+// Exibe mensagem temporária no display
+void show_message(const char *message, uint8_t x, uint8_t y, uint32_t delay_ms) {
+    xSemaphoreTake(xDisplayMutex, portMAX_DELAY);
+
+    // Exibe a mensagem
+    ssd1306_draw_string(&ssd, message, x, y);
+    ssd1306_send_data(&ssd);
+
+    xSemaphoreGive(xDisplayMutex);
+
+    // Aguarda o tempo de exibição
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+
+    // Apaga a área da mensagem
+    xSemaphoreTake(xDisplayMutex, portMAX_DELAY);
+
+    ssd1306_rect(&ssd, 42, 5, 118, 19, true, true);
+    ssd1306_rect(&ssd, 42, 5, 118, 19, false, true);
+    ssd1306_send_data(&ssd);
+
+    xSemaphoreGive(xDisplayMutex);
+}
+
+// Atualiza o conteúdo do display (contador) e do LED RGB
+void update_counter_led() {
     // Assume temporariamente o controle do display OLED
     xSemaphoreTake(xDisplayMutex, portMAX_DELAY);
 
-    // Atualiza o display OLED
+    // Cria o buffer para texto que será carregado no display
     char buffer[32];
-    sprintf(buffer, "Carros: %d de %d", parking_counter, PARKING_MAX);
-    ssd1306_fill(&ssd, false);
-    ssd1306_draw_string(&ssd, buffer, 10, 5);
+
+    // Atualiza o contador do display
+    ssd1306_rect(&ssd, 20, 56, 65, 18, false, false); // Limpa região do contador
+    sprintf(buffer, "%d de %d", PARKING_MAX - parking_counter, PARKING_MAX);
+    ssd1306_draw_string(&ssd, buffer, 64, 25);
     ssd1306_send_data(&ssd);
 
     // Atualiza o LED RGB com base no valor do contador
@@ -265,16 +348,20 @@ void vEntranceTask() {
 
         // Verifica se o semáforo do cotandor atingiu o limite (PARKING_MAX). Caso não tenha atingido, executa o bloco abaixo
         if (parking_counter < PARKING_MAX) {
-            printf("Carro entrou no estacionamento!\n");
-
             // Incrementa o contador do número de carros no estacionamento
             parking_counter = parking_counter + 1;
 
-            // Atualiza o display OLED, o LED RGB e o buzzer
-            update_display_led();
+            // Atualiza o display OLED, o LED RGB
+            update_counter_led();
+
+            show_message("Carro entrou", 9, 48, 1500);
+
+            printf("Carro entrou no estacionamento!\n");
         } else {
-            // O buzzer emite um beep
+            // Atualiza o display OLED, o LED RGB e o buzzer
             buzzer_sound(0);
+
+            show_message("Vaga indisp.", 9, 48, 1500);
 
             printf("Limite máximo de carros foi atingido!\n");
         }
@@ -294,8 +381,9 @@ void vLeaveTask() {
             // Decrementa o contador do número de carros no estacionamento
             parking_counter = parking_counter - 1;
 
-            // Atualiza o display OLED, o LED RGB e o buzzer
-            update_display_led();
+            update_counter_led();
+
+            show_message("Carro saiu", 9, 48, 1500);
         } else {
             printf("Nenhum carro estacionado!\n");
         }
@@ -311,12 +399,14 @@ void vResetTask() {
         // Reseta o contador do sistema
         parking_counter = 0;
 
-        // O buzzer emite um beep duplo
+        show_message("Reiniciado sis", 9, 48, 2500);
+
+        // Emite um beep duplo
         buzzer_sound(1);
 
-        printf("Sistema reiniciado!\n");
-
         // Atualiza o display OLED, o LED RGB e o buzzer
-        update_display_led();
+        update_counter_led();
+
+        printf("Sistema reiniciado!\n");
     }
 }
