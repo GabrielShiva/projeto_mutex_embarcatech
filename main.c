@@ -37,7 +37,7 @@ SemaphoreHandle_t xResetBiSemaphore;
 SemaphoreHandle_t xEntranceBiSemaphore;
 SemaphoreHandle_t xExitBiSemaphore;
 
-volatile uint16_t cars_counter = 0;
+volatile uint16_t parking_counter = 0;
 
 // Define variáveis para debounce dos botões
 volatile uint32_t last_time_btn_press = 0;
@@ -158,7 +158,16 @@ void peripheral_initialization() {
     ssd1306_fill(&ssd, false);
     ssd1306_send_data(&ssd);
 
-    ssd1306_draw_string(&ssd, "Carros: 0 de 8", 10, 5);
+    ssd1306_rect(&ssd, 3, 3, 122, 60, true, false);
+    ssd1306_line(&ssd, 3, 15, 123, 15, true); // linha horizontal - primeira
+    ssd1306_line(&ssd, 3, 40, 123, 40, true); // linha horizontal - segunda
+    ssd1306_line(&ssd, 53, 15, 53, 41, true); // linha vertical
+    ssd1306_draw_string(&ssd, "Estacionamento", 9, 6);
+    ssd1306_draw_string(&ssd, "Vagas", 9, 20);
+    ssd1306_draw_string(&ssd, "Disp.", 9, 30);
+
+    ssd1306_draw_string(&ssd, "8 de 8", 64, 25);
+
     ssd1306_send_data(&ssd);
 }
 
@@ -196,27 +205,45 @@ void ssd1306_setup(ssd1306_t *ssd_ptr) {
   ssd1306_send_data(ssd_ptr);
 }
 
-void update_display_led() {
-    xSemaphoreTake(xDisplayMutex, portMAX_DELAY);
-    int active = uxSemaphoreGetCount(xCounterSemaphore);
+// Emite o som no buzzer
+void buzzer_sound(uint beep_type) {
+    if (beep_type == 0) {
+        gpio_put(BUZZER_PIN, 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_put(BUZZER_PIN, 0);
+    }
 
-    // Display OLED
+    if (beep_type == 1) {
+        for (int i = 0; i < 2; i++) {
+            gpio_put(BUZZER_PIN, 1);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            gpio_put(BUZZER_PIN, 0);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+}
+
+void update_display_led() {
+    // Assume temporariamente o controle do display OLED
+    xSemaphoreTake(xDisplayMutex, portMAX_DELAY);
+
+    // Atualiza o display OLED
     char buffer[32];
-    sprintf(buffer, "Carros: %d de %d", active, PARKING_MAX);
+    sprintf(buffer, "Carros: %d de %d", parking_counter, PARKING_MAX);
     ssd1306_fill(&ssd, false);
     ssd1306_draw_string(&ssd, buffer, 10, 5);
     ssd1306_send_data(&ssd);
 
-        // LED RGB
-    if (active == 0) {
+    // Atualiza o LED RGB com base no valor do contador
+    if (parking_counter == 0) {
         gpio_put(LED_RED, 0);
         gpio_put(LED_GREEN, 0);
         gpio_put(LED_BLUE, 1);
-    } else if (active < PARKING_MAX - 1) {
+    } else if (parking_counter < PARKING_MAX - 1) {
         gpio_put(LED_RED, 0);
         gpio_put(LED_GREEN, 1);
         gpio_put(LED_BLUE, 0);
-    } else if (active == PARKING_MAX - 1) {
+    } else if (parking_counter == PARKING_MAX - 1) {
         gpio_put(LED_RED, 1);
         gpio_put(LED_GREEN, 1);
         gpio_put(LED_BLUE, 0);
@@ -226,6 +253,7 @@ void update_display_led() {
         gpio_put(LED_BLUE, 0);
     }
 
+    // Libera o display OLED
     xSemaphoreGive(xDisplayMutex);
 }
 
@@ -236,12 +264,18 @@ void vEntranceTask() {
         xSemaphoreTake(xEntranceBiSemaphore, portMAX_DELAY);
 
         // Verifica se o semáforo do cotandor atingiu o limite (PARKING_MAX). Caso não tenha atingido, executa o bloco abaixo
-        if (uxSemaphoreGetCount(xCounterSemaphore) < PARKING_MAX) {
+        if (parking_counter < PARKING_MAX) {
             printf("Carro entrou no estacionamento!\n");
 
-            xSemaphoreGive(xCounterSemaphore);
+            // Incrementa o contador do número de carros no estacionamento
+            parking_counter = parking_counter + 1;
+
+            // Atualiza o display OLED, o LED RGB e o buzzer
             update_display_led();
         } else {
+            // O buzzer emite um beep
+            buzzer_sound(0);
+
             printf("Limite máximo de carros foi atingido!\n");
         }
     }
@@ -254,10 +288,13 @@ void vLeaveTask() {
         xSemaphoreTake(xExitBiSemaphore, portMAX_DELAY);
 
         // Verifica se o semáforo do cotandor atingiu o limite (PARKING_MAX). Caso não tenha atingido, executa o bloco abaixo
-        if (uxSemaphoreGetCount(xCounterSemaphore) > 0) {
+        if (parking_counter > 0) {
             printf("Carro saiu do estacionamento!\n");
 
-            xSemaphoreTake(xCounterSemaphore, 0);
+            // Decrementa o contador do número de carros no estacionamento
+            parking_counter = parking_counter - 1;
+
+            // Atualiza o display OLED, o LED RGB e o buzzer
             update_display_led();
         } else {
             printf("Nenhum carro estacionado!\n");
@@ -268,14 +305,18 @@ void vLeaveTask() {
 // Implementa a tarefa de resetar o sistema (botão SW - Joystick)
 void vResetTask() {
     while (true) {
-        // Assume o semáforo do display
-        // if (xSemaphoreTake(xDisplayMutex, portMAX_DELAY) == pdTRUE) {
-        //     ssd1306_fill(&ssd, 0);
-        //     ssd1306_draw_string(&ssd, "Reset", 5, 20);
-        //     ssd1306_send_data(&ssd);
+        // Obtém o semáforo do contador de carros
+        xSemaphoreTake(xResetBiSemaphore, portMAX_DELAY);
 
-        //     // Libera o semáforo do display
-        //     xSemaphoreGive(xDisplayMutex);
-        // }
+        // Reseta o contador do sistema
+        parking_counter = 0;
+
+        // O buzzer emite um beep duplo
+        buzzer_sound(1);
+
+        printf("Sistema reiniciado!\n");
+
+        // Atualiza o display OLED, o LED RGB e o buzzer
+        update_display_led();
     }
 }
