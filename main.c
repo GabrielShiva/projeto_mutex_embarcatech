@@ -26,6 +26,9 @@
 #define LED_GREEN 11
 #define LED_BLUE 12
 
+// Define o máximo de carros no estacionamento
+#define MAX 8
+
 // Define variáveis para debounce dos botões
 volatile uint32_t last_time_btn_press = 0;
 const uint32_t debounce_delay_ms = 260;
@@ -60,6 +63,15 @@ void vBuzzerTask();
 
 // Implementa a tarefa dos LEDs RGB
 void vLEDsRGBTask();
+
+// Implementa a tarefa de entrada de carro (botão A)
+void vEntranceTask();
+
+// Implementa a tarefa de saída de carro (botão B)
+void vLeaveTask();
+
+// Implementa a tarefa de resetar o sistema (botão SW - Joystick)
+void vResetTask();
 
 int main() {
     stdio_init_all();
