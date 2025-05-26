@@ -251,18 +251,17 @@ void vEntranceTask() {
 void vLeaveTask() {
     while (true) {
         // Obtém o semáforo do contador de carros
-        // xSemaphoreTake(xExitBiSemaphore, portMAX_DELAY);
+        xSemaphoreTake(xExitBiSemaphore, portMAX_DELAY);
 
         // Verifica se o semáforo do cotandor atingiu o limite (PARKING_MAX). Caso não tenha atingido, executa o bloco abaixo
-        // if (uxSemaphoreGetCount(xCounterSemaphore) > 0) {
-        //     printf("Carro saiu do estacionamento!\n");
+        if (uxSemaphoreGetCount(xCounterSemaphore) > 0) {
+            printf("Carro saiu do estacionamento!\n");
 
-        //     xSemaphoreTake(xCounterSemaphore, 0);
-        //     update_display_led();
-        //     xSemaphoreGive(xCounterSemaphore);
-        // } else {
-        //     printf("Nenhum carro estacionado!\n");
-        // }
+            xSemaphoreTake(xCounterSemaphore, 0);
+            update_display_led();
+        } else {
+            printf("Nenhum carro estacionado!\n");
+        }
     }
 }
 
